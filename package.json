@@ -1,0 +1,31 @@
+{
+  "name": "spark-modbus",
+  "version": "0.0.3",
+  "description": "Datatellit developed for the Modbus protocol docking package, the upper protocol supports chuntsuan air conditioning",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Datatellit/spark-modbus.git"
+  },
+  "keywords": [
+    "modbus",
+    "spark",
+    "chuntsuan"
+  ],
+  "author": "waroom",
+  "license": "MIT",
+  "bugs": {
+    "url": "https://github.com/Datatellit/spark-modbus/issues"
+  },
+  "homepage": "https://github.com/Datatellit/spark-modbus#readme",
+  "dependencies": {
+    "modbus-stream": "^0.39.0",
+    "moment": "^2.20.1",
+    "promise-queue-plus": "^1.1.0",
+    "rabbit.js": "^0.4.4",
+    "uuid": "^3.2.1"
+  }
+}
