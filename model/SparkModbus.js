@@ -20,6 +20,7 @@ const EventEmitter = require('events').EventEmitter;
 const moment = require('moment');
 const fs = require('fs');
 const logger = require('../lib/logger.js');
+const errorCode = require('../lib/errorCode')
 
 /**
  * Implementation of the Spark Modbus messaging protocol
@@ -41,7 +42,7 @@ class SparkModbus extends EventEmitter {
     }
 
     setSocket() {
-        this.socket.transport.stream.setTimeout(35000);
+        this.socket.transport.stream.setNoDelay(true)
         this.socket.transport.stream.on('close', () => {
             // 进行关闭处理，并处理状态
             this.disconnect()
@@ -49,8 +50,7 @@ class SparkModbus extends EventEmitter {
         this.socket.transport.stream.on('timeout', () => {
             logger.log('modbus timeout')
             // 关闭
-            this.socket.transport.stream.end()
-            this.disconnect()
+            this.disconnect('TIMEOUT')
         })
         this.socket.transport.stream.on('disconnect', () => {
             logger.log('modbus disconnect:' + this.coreID)
@@ -59,6 +59,18 @@ class SparkModbus extends EventEmitter {
         this.socket.transport.stream.on('error', (err) => {
             logger.log('modbus error', err)
             this.disconnect()
+        })
+    }
+
+    /*
+  * 连接成功事件
+   */
+    onReady() {
+        // 设置超时时间，根据设备心跳时间+10s
+        this.queue.go(this._getSingle, [21, 1, this.socket]).then(d => {
+            let interval = d[0].readUInt16BE()
+            this.socket.transport.stream.setKeepAlive(true, (interval + 10) * 1000)
+            this.socket.transport.stream.setTimeout((interval + 10) * 1000);
         })
     }
 
@@ -73,6 +85,8 @@ class SparkModbus extends EventEmitter {
             switch (bit) {
                 case 0:
                     this.state.errorCode = data.readUInt16BE(i);
+                    // 检查状态并发送告警事件
+                    this._checkAlarm(this.state.errorCode)
                     break;
                 case 1:
                     // 运行模式：0 自动 1 制冷 2 除湿 3 送风 4 制热
@@ -123,6 +137,7 @@ class SparkModbus extends EventEmitter {
             if (global.event) {
                 global.event.publish(false, 'xlc-modbus-heartbeat', null, this.state, 30, moment(new Date()).toISOString(), this.coreID);
             }
+            this.emit('heartbeat', this.state)
         })
     }
 
@@ -503,18 +518,33 @@ class SparkModbus extends EventEmitter {
     /*
     * 设备断线
      */
-    disconnect() {
+    disconnect(err) {
         // 设置当前连接状态
         if (this) {
             // 再次确认链接状态
             this.queue.go(this._getSingle, [21, 1, this.socket]).then(d => {
                 // 触发再次活动
             }).catch(err => {
+                if (err === 'TIMEOUT') {
+                    this.socket.transport.stream.end()
+                }
                 this.state.connected = false
                 this.state.lastHeart = new Date()
                 this.emit('disconnect', this.state)
                 this.removeAllListeners()
             })
+        }
+    }
+
+    /*
+    * 设备异常告警
+     */
+    _checkAlarm(errCode) {
+        // 进行告警
+        if (errCode && global.event) {
+            // 获取错误信息
+            let errInfo = errorCode.filter(d => d.code === errCode)[0]
+            global.event.publish(false, 'xlc-modbus-alarm', null, errInfo, 30, moment(new Date()).toISOString(), this.coreID);
         }
     }
 }
