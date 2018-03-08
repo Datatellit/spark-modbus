@@ -37,11 +37,14 @@ class SparkModbus extends EventEmitter {
         this.productID = 0
         this.platformID = 0
         this.state = {}
-        this.socket = socket
-        this.setSocket()
+        this.initSocket(socket)
     }
 
-    setSocket() {
+    /*
+    * 初始化socket
+     */
+    initSocket(socket) {
+        this.socket = socket
         this.socket.transport.stream.setNoDelay(true)
         this.socket.transport.stream.on('close', () => {
             // 进行关闭处理，并处理状态
@@ -68,9 +71,9 @@ class SparkModbus extends EventEmitter {
     onReady() {
         // 设置超时时间，根据设备心跳时间+10s
         this.queue.go(this._getSingle, [21, 1, this.socket]).then(d => {
-            let interval = d[0].readUInt16BE()
-            this.socket.transport.stream.setKeepAlive(true, (interval + 10) * 1000)
-            this.socket.transport.stream.setTimeout((interval + 10) * 1000);
+            this.socket.ttl = this.ttl = d[0].readUInt16BE()
+            this.socket.transport.stream.setKeepAlive(true, (this.ttl + 5) * 1000)
+            this.socket.transport.stream.setTimeout((this.ttl + 10) * 1000);
         })
     }
 
@@ -78,6 +81,9 @@ class SparkModbus extends EventEmitter {
         return (this.socket.transport.stream.remoteAddress && this.socket.transport.stream.remoteAddress) ? this.socket.transport.stream.remoteAddress.toString() : "unknown";
     }
 
+    /*
+    * 心跳消息处理
+     */
     heartbeat(data) {
         let bit = 0
         let tmp = 0
@@ -135,15 +141,18 @@ class SparkModbus extends EventEmitter {
             Object.assign(this.state, sensor)
             // 通知上层应用，状态更新消息
             if (global.event) {
-                global.event.publish(false, 'xlc-modbus-heartbeat', null, this.state, 30, moment(new Date()).toISOString(), this.coreID);
+                global.event.publish(false, 'xlc-modbus-heartbeat', null, Object.assign({ttl: this.ttl}, this.state), this.ttl, moment(new Date()).toISOString(), this.coreID);
             }
             this.emit('heartbeat', this.state)
         })
     }
 
+    /*
+    * 获取环境信息，当前仅支持温湿度
+     */
     getSensor() {
         const that = this
-        return new Promise((resovle, reject) => {
+        return new Promise((resolve, reject) => {
             that.queue.go(that._getSingle, [561, 2, that.socket]).then(sensor => {
                 let DHTh = 0
                 let DHTt = 0
@@ -154,7 +163,7 @@ class SparkModbus extends EventEmitter {
                         DHTh = k.readUInt16BE() / 100
                     }
                 })
-                resovle({sensor: {DHTt: DHTt, DHTh: DHTh}})
+                resolve({sensor: {DHTt: DHTt, DHTh: DHTh}})
             }).catch(err => {
                 logger.log('Modbus get sensor error', err)
             })
@@ -238,8 +247,20 @@ class SparkModbus extends EventEmitter {
     * interval Int min:30 max:120
      */
     setHeartbeat(interval) {
-        let address = 21, value = Buffer.from(['0x00', '0x' + interval.toString(16)])
-        return this.queue.go(this._setSingle, [address, value, this.socket])
+        const that = this
+        return new Promise(function (resolve, reject) {
+            let address = 21, value = Buffer.from(['0x00', '0x' + interval.toString(16)])
+            that.queue.go(that._setSingle, [address, value, that.socket]).then(d => {
+                that.socket.ttl = that.ttl = interval
+                // 超过心跳5秒，进行一次空包发送
+                that.socket.transport.stream.setKeepAlive(true, (that.ttl + 5) * 1000)
+                // 超过10s判定超时，主动断开连接
+                that.socket.transport.stream.setTimeout((that.ttl + 10) * 1000);
+                resolve(d)
+            }).catch(err => {
+                reject('modbus set heartbeat:', err)
+            })
+        })
     }
 
     /*
@@ -471,7 +492,7 @@ class SparkModbus extends EventEmitter {
                             address: address,
                             quantity: length,
                             data: info.response.data.map(b => b.readUInt16BE())
-                        }, 30, moment(new Date()).toISOString(), conn.coreID);
+                        }, conn.ttl, moment(new Date()).toISOString(), conn.coreID);
                     }
                     resolve(info.response.data)
                 }
@@ -490,7 +511,7 @@ class SparkModbus extends EventEmitter {
                         global.event.publish(false, 'xlc-modbus-data', null, Object.assign({}, info.response, {
                             quantity: 1,
                             data: info.response.value.readUInt16BE()
-                        }), 30, moment(new Date()).toISOString(), conn.coreID);
+                        }), conn.ttl, moment(new Date()).toISOString(), conn.coreID);
                     }
                     resolve(info.response.value)
                 }
@@ -506,7 +527,7 @@ class SparkModbus extends EventEmitter {
                     reject(err)
                 } else {
                     if (global.event) {
-                        global.event.publish(false, 'xlc-modbus-data', null, Object.assign({}, info.response, {data: values.map(b => b.readUInt16BE())}), 30, moment(new Date()).toISOString(), conn.coreID);
+                        global.event.publish(false, 'xlc-modbus-data', null, Object.assign({}, info.response, {data: values.map(b => b.readUInt16BE())}), conn.ttl, moment(new Date()).toISOString(), conn.coreID);
                     }
                     // 多位写入成功不返回数据
                     resolve(true)
@@ -544,7 +565,7 @@ class SparkModbus extends EventEmitter {
         if (errCode && global.event) {
             // 获取错误信息
             let errInfo = errorCode.filter(d => d.code === errCode)[0]
-            global.event.publish(false, 'xlc-modbus-alarm', null, errInfo, 30, moment(new Date()).toISOString(), this.coreID);
+            global.event.publish(false, 'xlc-modbus-alarm', null, errInfo, this.ttl, moment(new Date()).toISOString(), this.coreID);
         }
     }
 }
