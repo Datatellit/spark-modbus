@@ -340,7 +340,7 @@ class SparkModbus extends EventEmitter {
                         let weeks = d[i + 2].readInt8().toString(2).split('').reverse().map((d, i) => {
                             return (parseInt(d) && i) || false
                         }).filter(d => d && true)
-                        if (rule.isrepeat) {
+                        if (weeks && weeks.length) {
                             rule.weeks = weeks
                         } else {
                             rule.weeks = []
