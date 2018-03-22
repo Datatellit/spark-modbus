@@ -30,7 +30,7 @@ const errorCode = require('../lib/errorCode')
  * disconnect->离线事件
  */
 class SparkModbus extends EventEmitter {
-    constructor(socket) {
+    constructor (socket) {
         super()
         this.connStartTime = new Date();
         this.cellular = false
@@ -38,12 +38,15 @@ class SparkModbus extends EventEmitter {
         this.platformID = 0
         this.state = {}
         this.initSocket(socket)
+        this.functions = [
+            'getSensor', 'getRules', 'getCoreID', 'getFirmwareVersion', 'getOtherProperty', 'setOnTime', 'setCoreID', 'setCode', 'setLimitA', 'setHeartbeat', 'setAirStatus', 'setRules'
+        ]
     }
 
     /*
     * 初始化socket
      */
-    initSocket(socket) {
+    initSocket (socket) {
         this.socket = socket
         this.socket.transport.stream.setNoDelay(true)
         this.socket.transport.stream.on('close', () => {
@@ -68,7 +71,7 @@ class SparkModbus extends EventEmitter {
     /*
   * 连接成功事件
    */
-    onReady() {
+    onReady () {
         // 设置超时时间，根据设备心跳时间+10s
         this.queue.go(this._getSingle, [21, 1, this.socket]).then(d => {
             this.socket.ttl = this.ttl = d[0].readUInt16BE()
@@ -77,14 +80,14 @@ class SparkModbus extends EventEmitter {
         })
     }
 
-    getRemoteIPAddress() {
-        return (this.socket.transport.stream.remoteAddress && this.socket.transport.stream.remoteAddress) ? this.socket.transport.stream.remoteAddress.toString() : "unknown";
+    getRemoteIPAddress () {
+        return (this.socket.transport.stream.remoteAddress && this.socket.transport.stream.remoteAddress) ? this.socket.transport.stream.remoteAddress.toString() : 'unknown';
     }
 
     /*
     * 心跳消息处理
      */
-    heartbeat(data) {
+    heartbeat (data) {
         let bit = 0
         let tmp = 0
         for (let i = 0; i < data.length; i += 2) {
@@ -116,18 +119,20 @@ class SparkModbus extends EventEmitter {
                     break;
                 case 6:
                     // 单位：安培
-                    this.state.ammeter = data.readUInt16BE(i);
+                    this.state.ammeter = data.readUInt16BE(i) / 100;
                     break;
                 case 7:
                     tmp = data.readUInt16BE(i)
                     break;
                 case 8:
+                    // 单位：安培
                     this.state.todayPower = (data.readUInt16BE(i) * 65536 + tmp) / 100
                     break;
                 case 9:
                     tmp = data.readUInt16BE(i)
                     break;
                 case 10:
+                    // 单位：安培
                     this.state.totalPower = (data.readUInt16BE(i) * 65536 + tmp) / 100
                     break;
             }
@@ -141,7 +146,7 @@ class SparkModbus extends EventEmitter {
             Object.assign(this.state, sensor)
             // 通知上层应用，状态更新消息
             if (global.event) {
-                global.event.publish(false, 'xlc-modbus-heartbeat', null, Object.assign({ttl: this.ttl}, this.state), this.ttl, moment(new Date()).toISOString(), this.coreID);
+                global.event.publish(false, 'xlc-heartbeat-device', null, Object.assign({ttl: this.ttl}, this.state), this.ttl, moment(new Date()).toISOString(), this.coreID);
             }
             this.emit('heartbeat', this.state)
         })
@@ -150,7 +155,7 @@ class SparkModbus extends EventEmitter {
     /*
     * 获取环境信息，当前仅支持温湿度
      */
-    getSensor() {
+    getSensor () {
         const that = this
         return new Promise((resolve, reject) => {
             that.queue.go(that._getSingle, [561, 2, that.socket]).then(sensor => {
@@ -173,7 +178,7 @@ class SparkModbus extends EventEmitter {
     /*
     * 对设备进行校时操作，此操作应确保服务器的时间准确
      */
-    setOnTime() {
+    setOnTime () {
         let ts = parseInt(new Date().getTime().toString().substr(0, 10))
         let high = ts >> 16
         let low = ts & 65535
@@ -186,9 +191,13 @@ class SparkModbus extends EventEmitter {
     * 设备的客户端唯一标识
     * 存储用户自定义数据，限制最大位64位1-9a-f的任意组合，最大为fff...(64)，但是本系统默认为24位
      */
-    setCoreID(data) {
+    setCoreID (data) {
         const that = this
         return new Promise(function (resolve, reject) {
+            if (!data) {
+                reject('parameter is not legal')
+                return
+            }
             if (data.length != 24) {
                 reject('Modbus coreID length must 24')
             }
@@ -200,7 +209,11 @@ class SparkModbus extends EventEmitter {
                         write.push(Buffer.from(['0x' + arr[i] + arr[i + 1], '0x' + arr[i + 2] + arr[i + 3]]))
                     }
                 }
-                return that.queue.go(that._setMultiple, [173, write, that.socket])
+                return that.queue.go(that._setMultiple, [173, write, that.socket]).then(d => {
+
+                }).catch(e => {
+                    reject(e)
+                })
             } else {
                 reject('Modbs coreId rule [0-9a-fA-F]')
             }
@@ -211,7 +224,12 @@ class SparkModbus extends EventEmitter {
     * 设置空调的红外码类型
     * code详细参见文档
      */
-    setCode(code) {
+    setCode (code) {
+        if (!code) {
+            return new Promise(function (resolve, reject) {
+                reject('parameter is not legal')
+            })
+        }
         let address = 76, values = [Buffer.from(['0x00', '0x02']), Buffer.from(['0x00', '0x' + code.toString(16)])]
         return this.queue.go(this._setMultiple, [address, values, this.socket])
     }
@@ -223,7 +241,12 @@ class SparkModbus extends EventEmitter {
     * thresholdA：状态电流（小于此值为关机，大于等于则为开机）
     * compressorA：压缩机开启电流（大于此值代表压缩机开启）
     */
-    setLimitA(args) {
+    setLimitA (args) {
+        if (!args) {
+            return new Promise(function (resolve, reject) {
+                reject('parameter is not legal')
+            })
+        }
         let address = 87, values = []
         Object.assign(args, {
             noiseA: args.noiseA * 100,
@@ -246,7 +269,7 @@ class SparkModbus extends EventEmitter {
     * 设置心跳周期，单位s，为保证服务器的性能和数据实时性，此处应该不小于30s不大于120s
     * interval Int min:30 max:120
      */
-    setHeartbeat(interval) {
+    setHeartbeat (interval) {
         const that = this
         return new Promise(function (resolve, reject) {
             let address = 21, value = Buffer.from(['0x00', '0x' + interval.toString(16)])
@@ -267,7 +290,7 @@ class SparkModbus extends EventEmitter {
     * 控制空调
     * args {state:1,tt:20,mode:0,air:3}
      */
-    setAirStatus(args) {
+    setAirStatus (args) {
         // 发送控制命令
         let write = [
             Buffer.from(['0x00', args.mode ? '0x04' : '0x01']),
@@ -275,7 +298,18 @@ class SparkModbus extends EventEmitter {
             Buffer.from(['0x00', '0x' + args.air.toString(16)]),
             Buffer.from(['0x00', '0x' + args.state.toString(16)])
         ]
-        return this.queue.go(this._setMultiple, [82, write, this.socket])
+        const that = this
+        return new Promise(function (resolve, reject) {
+            that.queue.go(that._setMultiple, [82, write, that.socket]).then(d => {
+                if (d && global.event) {
+                    // 根据长度和起始位置确定当前空调的状态信息，并发布出去
+                    global.event.publish(false, 'xlc-status-device', null, args, that.socket.ttl, moment(new Date()).toISOString(), that.socket.coreID);
+                }
+                resolve(true)
+            }).catch(e => {
+                reject('set airCondition status error')
+            })
+        })
     }
 
     /*
@@ -283,7 +317,7 @@ class SparkModbus extends EventEmitter {
     * args [{hour:x,minute:x,weekdays:[1,2,3],isrepeat:1,no:1,cmd:{state:1,tt:26}}]
     * 当前规则采用全部下发策略，即无论规则做什么改动，均是进行全部同步，否则会出现覆盖情况
      */
-    setRules(args) {
+    setRules (args) {
         const that = this
         return new Promise(function (resolve, reject) {
             // 周几（当前定义1~7）、是否重复、执行时间、序号、命令
@@ -303,7 +337,6 @@ class SparkModbus extends EventEmitter {
             }).catch(err => {
                 logger.log('Modbus clearRules error', err)
             })
-            console.log(write)
             that.queue.go(that._setMultiple, [93, write, that.socket]).then(d => {
                 resolve(true)
             }).catch(err => {
@@ -315,7 +348,7 @@ class SparkModbus extends EventEmitter {
     /*
     * 获取当前空调设备规则
      */
-    getRules() {
+    getRules () {
         const that = this
         return new Promise(function (resolve, reject) {
             // 当前仅支持10个规则，应用端应做好控制
@@ -361,7 +394,7 @@ class SparkModbus extends EventEmitter {
     /*
     * 获取设备的coreID
      */
-    getCoreID() {
+    getCoreID () {
         const that = this
         return new Promise(function (resolve, reject) {
             that.queue.go(that._getSingle, [173, 6, that.socket]).then(d => {
@@ -384,7 +417,7 @@ class SparkModbus extends EventEmitter {
     /*
     * 获取设备Firmware
      */
-    getFirmwareVersion() {
+    getFirmwareVersion () {
         const that = this
         return new Promise(function (resovle, reject) {
             that.queue.go(that._getSingle, [514, 2, that.socket]).then(d => {
@@ -403,7 +436,7 @@ class SparkModbus extends EventEmitter {
     /*
     * 获取其他动态属性
      */
-    getOtherProperty() {
+    getOtherProperty () {
         /*
          * 获取当前空调的配置，包含以下值
          * 心跳周期（20）、空调代码（76~77）
@@ -431,7 +464,6 @@ class SparkModbus extends EventEmitter {
                 result.rules = d
                 resolve(result)
             }).catch(err => {
-                console.log(result)
                 reject(err)
             })
         })
@@ -440,18 +472,17 @@ class SparkModbus extends EventEmitter {
     /*
     * 清除或删除规则
      */
-    clearRules() {
+    clearRules () {
         // 周几（当前定义1~7）、是否重复、执行时间、序号、命令
         let write = []
         for (let i = 0; i < 10; i++) {
             write = write.concat(this._appendRules({}, true))
         }
-        console.log(write)
         return this.queue.go(this._setMultiple, [93, write, this.socket])
     }
 
     // 追加规则
-    _appendRules(arg, clear = false) {
+    _appendRules (arg, clear = false) {
         let write = []
         if (clear) {
             write = write.concat([Buffer.from(['0x00', '0x00']), Buffer.from(['0x00', '0x00']), Buffer.from(['0x00', '0x00']), Buffer.from(['0x00', '0x00'])])
@@ -478,7 +509,7 @@ class SparkModbus extends EventEmitter {
     }
 
     // 读取 0x03
-    _getSingle(address, length, conn) {
+    _getSingle (address, length, conn) {
         return new Promise(function (resolve, reject) {
             // 03 Function
             conn.readHoldingRegisters({address: address, quantity: length}, (err, info) => {
@@ -487,7 +518,7 @@ class SparkModbus extends EventEmitter {
                 } else {
                     // 其他消息，简单处理后原样返回，1、消息类型 2、消息长度 3、起始地址 4、消息内容
                     if (global.event) {
-                        global.event.publish(false, 'xlc-modbus-data', null, {
+                        global.event.publish(false, 'xlc-data-device', null, {
                             code: info.response.code,
                             address: address,
                             quantity: length,
@@ -501,14 +532,14 @@ class SparkModbus extends EventEmitter {
     }
 
     // 写入一位 0x06
-    _setSingle(address, value, conn) {
+    _setSingle (address, value, conn) {
         return new Promise(function (resolve, reject) {
             conn.writeSingleRegister({address: address, value: value}, (err, info) => {
                 if (err) {
                     reject(err)
                 } else {
                     if (global.event) {
-                        global.event.publish(false, 'xlc-modbus-data', null, Object.assign({}, info.response, {
+                        global.event.publish(false, 'xlc-data-device', null, Object.assign({}, info.response, {
                             quantity: 1,
                             data: info.response.value.readUInt16BE()
                         }), conn.ttl, moment(new Date()).toISOString(), conn.coreID);
@@ -520,14 +551,14 @@ class SparkModbus extends EventEmitter {
     }
 
     // 写入多位 0x10
-    _setMultiple(address, values, conn) {
+    _setMultiple (address, values, conn) {
         return new Promise(function (resolve, reject) {
             conn.writeMultipleRegisters({address: address, values: values}, (err, info) => {
                 if (err) {
                     reject(err)
                 } else {
                     if (global.event) {
-                        global.event.publish(false, 'xlc-modbus-data', null, Object.assign({}, info.response, {data: values.map(b => b.readUInt16BE())}), conn.ttl, moment(new Date()).toISOString(), conn.coreID);
+                        global.event.publish(false, 'xlc-data-device', null, Object.assign({}, info.response, {data: values.map(b => b.readUInt16BE())}), conn.ttl, moment(new Date()).toISOString(), conn.coreID);
                     }
                     // 多位写入成功不返回数据
                     resolve(true)
@@ -539,12 +570,14 @@ class SparkModbus extends EventEmitter {
     /*
     * 设备断线
      */
-    disconnect(err) {
+    disconnect (err) {
         // 设置当前连接状态
         if (this) {
+            this.state.connected = false
             // 再次确认链接状态
             this.queue.go(this._getSingle, [21, 1, this.socket]).then(d => {
                 // 触发再次活动
+                this.state.connected = true
             }).catch(err => {
                 if (err === 'TIMEOUT') {
                     this.socket.transport.stream.end()
@@ -560,12 +593,12 @@ class SparkModbus extends EventEmitter {
     /*
     * 设备异常告警
      */
-    _checkAlarm(errCode) {
+    _checkAlarm (errCode) {
         // 进行告警
         if (errCode && global.event) {
             // 获取错误信息
             let errInfo = errorCode.filter(d => d.code === errCode)[0]
-            global.event.publish(false, 'xlc-modbus-alarm', null, errInfo, this.ttl, moment(new Date()).toISOString(), this.coreID);
+            global.event.publish(false, 'xlc-event-alarm', null, errInfo, this.ttl, moment(new Date()).toISOString(), this.coreID);
         }
     }
 }
