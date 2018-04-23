@@ -53,10 +53,16 @@ serverInstance.on('online', coreID => {
         // core.setAirStatus({state: 1, tt: 29, mode: 1, air: 3}).then(d => {
         //     console.log('setAirStatus', d)
         // })
+        // core._getSingle(565, 2, core.socket).then(d => {
+        //     console.log('---------', d)
+        //     core._getSingle(567, 2, core.socket).then(d => {
+        //         console.log('---------', d)
+        //     })
+        // })
         console.log(core.functions)
-        core.getOtherProperty().then(function (result) {
-            console.log('结果', JSON.stringify(result))
-        })
+        // core.getOtherProperty().then(function (result) {
+        //     console.log('结果', JSON.stringify(result))
+        // })
     }
 })
 //
@@ -131,10 +137,10 @@ serverInstance.on('online', coreID => {
 //     })
 // }
 //
-// process.on('uncaughtException', function (err) {
-//     console.log('process.on handler');
-//     console.log(err);
-// });
+process.on('uncaughtException', function (err) {
+    console.log('process.on handler');
+    console.log(err);
+});
 
 // class Test {
 //     constructor () {

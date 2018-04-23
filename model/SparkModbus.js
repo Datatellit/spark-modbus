@@ -18,7 +18,7 @@
 
 const EventEmitter = require('events').EventEmitter;
 const moment = require('moment');
-const fs = require('fs');
+const Queue = require('promise-queue-plus')
 const logger = require('../lib/logger.js');
 const errorCode = require('../lib/errorCode')
 
@@ -37,9 +37,15 @@ class SparkModbus extends EventEmitter {
         this.productID = 0
         this.platformID = 0
         this.state = {}
+        // 初始化消息队列
+        this.queue = new Queue(1, {
+            'retry': 0               //Number of retries
+            , 'retryIsJump': false     //retry now?
+            , 'timeout': 1500            //The timeout period
+        })
         this.initSocket(socket)
         this.functions = [
-            'getSensor', 'getRules', 'getCoreID', 'getFirmwareVersion', 'getOtherProperty', 'setOnTime', 'setCoreID', 'setCode', 'setLimitA', 'setHeartbeat', 'setAirStatus', 'setRules'
+            'getSensor', 'getRules', 'getCoreID', 'getFirmwareVersion', 'getOtherProperty', 'getTodayPower', 'setOnTime', 'setCoreID', 'setCode', 'setLimitA', 'setHeartbeat', 'setAirStatus', 'setRules'
         ]
     }
 
@@ -77,6 +83,11 @@ class SparkModbus extends EventEmitter {
             this.socket.ttl = this.ttl = d[0].readUInt16BE()
             this.socket.transport.stream.setKeepAlive(true, (this.ttl + 5) * 1000)
             this.socket.transport.stream.setTimeout((this.ttl + 10) * 1000);
+        }).catch(e => {
+            logger.log('read ttl error.retry')
+            if (this.state.connected) {
+                this.onReady()
+            }
         })
     }
 
@@ -126,7 +137,11 @@ class SparkModbus extends EventEmitter {
                     break;
                 case 8:
                     // 单位：安培
+                    // console.log(tmp, data.readUInt16BE(i))
                     this.state.todayPower = (data.readUInt16BE(i) * 65536 + tmp) / 100
+                    // this.getTodayPower().then(d => {
+                    //     this.state.todayPower = d
+                    // })
                     break;
                 case 9:
                     tmp = data.readUInt16BE(i)
@@ -141,6 +156,9 @@ class SparkModbus extends EventEmitter {
         // 更新连接状态及last_heart
         this.state.connected = true
         this.state.lastHeart = new Date()
+        if (!this.ttl) { // 重新获取ttl
+            this.onReady()
+        }
         // 获取当前温湿度信息
         this.getSensor().then(sensor => {
             Object.assign(this.state, sensor)
@@ -148,7 +166,22 @@ class SparkModbus extends EventEmitter {
             if (global.event) {
                 global.event.publish(false, 'xlc-heartbeat-device', null, Object.assign({ttl: this.ttl}, this.state), this.ttl, moment(new Date()).toISOString(), this.coreID);
             }
-            this.emit('heartbeat', this.state)
+            this.emit('heartbeat', Object.assign({ttl: this.ttl}, this.state))
+        })
+    }
+
+    /*
+    * 获取今日电量
+     */
+    getTodayPower () {
+        const that = this
+        return new Promise((resolve, reject) => {
+            that.queue.go(that._getSingle, [565, 2, that.socket]).then(data => {
+                console.log(data)
+                resolve((data[1].readUInt16BE() * 65536 + data[0].readUInt16BE()) / 100)
+            }).catch(err => {
+                logger.log('Modbus get sensor error', err)
+            })
         })
     }
 
@@ -242,7 +275,7 @@ class SparkModbus extends EventEmitter {
     * compressorA：压缩机开启电流（大于此值代表压缩机开启）
     */
     setLimitA (args) {
-        if (!args) {
+        if (!args || !args.hasOwnProperty('noiseA') || !args.hasOwnProperty('thresholdA') || !args.hasOwnProperty('compressorA')) {
             return new Promise(function (resolve, reject) {
                 reject('parameter is not legal')
             })
@@ -272,6 +305,10 @@ class SparkModbus extends EventEmitter {
     setHeartbeat (interval) {
         const that = this
         return new Promise(function (resolve, reject) {
+            if (!interval || (typeof interval) !== 'number' || interval < 30) {
+                reject('parameter is not legal')
+                return
+            }
             let address = 21, value = Buffer.from(['0x00', '0x' + interval.toString(16)])
             that.queue.go(that._setSingle, [address, value, that.socket]).then(d => {
                 that.socket.ttl = that.ttl = interval
@@ -291,15 +328,19 @@ class SparkModbus extends EventEmitter {
     * args {state:1,tt:20,mode:0,air:3}
      */
     setAirStatus (args) {
-        // 发送控制命令
-        let write = [
-            Buffer.from(['0x00', args.mode ? '0x04' : '0x01']),
-            Buffer.from(['0x00', '0x' + args.tt.toString(16)]),
-            Buffer.from(['0x00', '0x' + args.air.toString(16)]),
-            Buffer.from(['0x00', '0x' + args.state.toString(16)])
-        ]
         const that = this
         return new Promise(function (resolve, reject) {
+            if (!args || !args.hasOwnProperty('mode') || !args.hasOwnProperty('tt') || !args.hasOwnProperty('air') || !args.hasOwnProperty('state')) {
+                reject('parameter is not legal')
+                return
+            }
+            // 发送控制命令
+            let write = [
+                Buffer.from(['0x00', args.mode ? '0x04' : '0x01']),
+                Buffer.from(['0x00', '0x' + args.tt.toString(16)]),
+                Buffer.from(['0x00', '0x' + args.air.toString(16)]),
+                Buffer.from(['0x00', '0x' + args.state.toString(16)])
+            ]
             that.queue.go(that._setMultiple, [82, write, that.socket]).then(d => {
                 if (d && global.event) {
                     // 根据长度和起始位置确定当前空调的状态信息，并发布出去
@@ -321,6 +362,10 @@ class SparkModbus extends EventEmitter {
         const that = this
         return new Promise(function (resolve, reject) {
             // 周几（当前定义1~7）、是否重复、执行时间、序号、命令
+            if (!Array.isArray(args) || (Array.isArray(args) && args.length > 0 && (!args[0].hasOwnProperty('hour') || !args[0].hasOwnProperty('minute') || !args[0].hasOwnProperty('weekdays') || !args[0].hasOwnProperty('isrepeat') || !args[0].hasOwnProperty('cmd')))) {
+                reject('parameter is not legal')
+                return
+            }
             let write = []
             if (Array.isArray(args)) {
                 args.forEach((arg, i) => {
@@ -567,6 +612,7 @@ class SparkModbus extends EventEmitter {
         })
     }
 
+
     /*
     * 设备断线
      */
@@ -585,7 +631,6 @@ class SparkModbus extends EventEmitter {
                 this.state.connected = false
                 this.state.lastHeart = new Date()
                 this.emit('disconnect', this.state)
-                this.removeAllListeners()
             })
         }
     }

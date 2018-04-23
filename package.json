@@ -1,6 +1,6 @@
 {
   "name": "spark-modbus",
-  "version": "0.2.5",
+  "version": "0.3.6",
   "description": "Datatellit developed for the Modbus protocol docking package, the upper protocol supports chuntsuan air conditioning",
   "main": "index.js",
   "scripts": {
